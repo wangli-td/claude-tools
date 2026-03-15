@@ -60,19 +60,68 @@ class ProjectManager(ProjectManagerInterface):
     def deactivate(self) -> bool:
         """Deactivate the current project's profile.
 
+        Removes profile-specific resources but preserves local project resources.
+
         Returns:
             True if deactivated, False if no profile was active
         """
         if not self.project_config_file.exists():
             return False
 
-        # Remove .claude/ directory
+        # Remove only profile-specific resources, preserve local resources
         if self.claude_dir.exists():
-            shutil.rmtree(self.claude_dir)
+            self._cleanup_profile_resources()
+
+            # Remove .claude/ directory only if empty (no local resources)
+            if self._is_claude_dir_empty():
+                shutil.rmtree(self.claude_dir)
+
+        # Clean up any temp backup directories
+        backup_dir = self.project_dir / ".ccm_backup_temp"
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir)
 
         # Remove project config
         self.project_config_file.unlink()
 
+        return True
+
+    def _cleanup_profile_resources(self) -> None:
+        """Remove profile-specific resources while preserving local ones.
+
+        Only removes _profile symlinks. Preserves:
+        - CLAUDE.md (user may have edited it)
+        - All local skills/agents/commands/rules
+        - Any other user-created files
+        """
+        # Remove _profile symlinks from each resource directory
+        for item in ["agents", "skills", "commands", "rules"]:
+            item_dir = self.claude_dir / item
+            if not item_dir.exists():
+                continue
+
+            profile_link = item_dir / "_profile"
+            if profile_link.exists() and profile_link.is_symlink():
+                profile_link.unlink()
+
+    def _is_claude_dir_empty(self) -> bool:
+        """Check if .claude/ directory has no user-created content.
+
+        Returns True only if directory is completely empty or has no
+        meaningful content (only empty directories).
+        """
+        if not self.claude_dir.exists():
+            return True
+
+        for item in self.claude_dir.iterdir():
+            if item.is_file():
+                # Any file is considered user content
+                return False
+            if item.is_dir():
+                # Check if resource directory has local content (not just _profile)
+                for subitem in item.iterdir():
+                    if subitem.name != "_profile" or not subitem.is_symlink():
+                        return False
         return True
 
     def status(self) -> dict[str, Any]:
@@ -94,18 +143,23 @@ class ProjectManager(ProjectManagerInterface):
             status["active"] = True
             status["profile"] = profile_name
 
-            # Check links
+            # Check links and local resources
             for item in ["agents", "skills", "commands", "rules"]:
-                link_path = self.claude_dir / item
-                if link_path.exists():
-                    if link_path.is_symlink():
-                        status["links"][item] = str(link_path.readlink())
-                    else:
-                        status["links"][item] = "(directory)"
+                item_path = self.claude_dir / item
+                if item_path.exists():
+                    profile_link = item_path / "_profile"
 
-            # Check CLAUDE.md
-            claude_md = self.claude_dir / "CLAUDE.md"
-            status["claude_md_exists"] = claude_md.exists()
+                    parts = []
+                    if profile_link.exists() and profile_link.is_symlink():
+                        parts.append(f"profile -> {profile_link.readlink()}")
+
+                    # Count local items (excluding _profile)
+                    local_items = [f for f in item_path.iterdir() if f.name != "_profile"]
+                    if local_items:
+                        parts.append(f"local ({len(local_items)} items)")
+
+                    if parts:
+                        status["links"][item] = " + ".join(parts)
 
         return status
 
@@ -137,53 +191,92 @@ class ProjectManager(ProjectManagerInterface):
         }
 
     def _setup_claude_dir(self, profile_dir: Path) -> None:
-        """Set up .claude/ directory with symlinks."""
+        """Set up .claude/ directory with merged profile and local resources.
+
+        Structure:
+            .claude/
+            ├── agents/
+            │   ├── _profile/ -> symlink to profile/agents/
+            │   └── <local agents...>   # project-specific agents (preserved)
+            ├── skills/
+            │   ├── _profile/ -> symlink to profile/skills/
+            │   └── <local skills...>   # project-specific skills (preserved)
+            ├── commands/
+            │   ├── _profile/ -> symlink to profile/commands/
+            │   └── <local commands...> # project-specific commands (preserved)
+            └── rules/
+                ├── _profile/ -> symlink to profile/rules/
+                └── <local rules...>    # project-specific rules (preserved)
+
+        Note: CLAUDE.md is not managed by CCM. Users should create it in the
+        project root directory if needed.
+        """
+        # Backup existing local resources before removing .claude/
+        local_backup = self._backup_local_resources()
+
         # Remove existing .claude/ if it exists
         if self.claude_dir.exists():
             shutil.rmtree(self.claude_dir)
 
         self.claude_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create symlinks for each type
+        # Create merged structure for each type
         for item in ["agents", "skills", "commands", "rules"]:
-            src = profile_dir / item
-            dst = self.claude_dir / item
+            profile_src = profile_dir / item
+            item_dir = self.claude_dir / item
+            profile_link = item_dir / "_profile"
 
-            if src.exists() and any(src.iterdir()):
-                dst.symlink_to(src, target_is_directory=True)
+            # Create parent directory
+            item_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy CLAUDE.md if exists
-        src_claude_md = profile_dir / "CLAUDE.md"
-        if src_claude_md.exists():
-            shutil.copy2(src_claude_md, self.claude_dir / "CLAUDE.md")
-        else:
-            # Generate basic CLAUDE.md
-            self._generate_claude_md()
+            # Create symlink to profile resources
+            if profile_src.exists() and any(profile_src.iterdir()):
+                profile_link.symlink_to(profile_src, target_is_directory=True)
 
-    def _generate_claude_md(self) -> None:
-        """Generate a basic CLAUDE.md for the project."""
-        profile_name = self.project_config_file.read_text(encoding="utf-8").strip()
-        project_name = self.project_dir.name
+            # Restore local resources from backup (directly in item_dir, not _local/)
+            if item in local_backup:
+                for backup_item in local_backup[item].iterdir():
+                    dst = item_dir / backup_item.name
+                    if backup_item.is_dir():
+                        shutil.copytree(backup_item, dst)
+                    else:
+                        shutil.copy2(backup_item, dst)
 
-        content = f"""# {project_name}
+        # Clean up backup
+        if local_backup:
+            shutil.rmtree(self.project_dir / ".ccm_backup_temp")
 
-> Profile: {profile_name}
+    def _backup_local_resources(self) -> dict[str, Path]:
+        """Backup local resources before refreshing .claude/ directory.
 
-## Project Overview
+        Returns:
+            Dict mapping resource type to backup path
+        """
+        backup_dir = self.project_dir / ".ccm_backup_temp"
+        backup: dict[str, Path] = {}
 
-<!-- Describe what this project does -->
+        if not self.claude_dir.exists():
+            return backup
 
-## Tech Stack
+        for item in ["agents", "skills", "commands", "rules"]:
+            item_dir = self.claude_dir / item
+            if not item_dir.exists() or not item_dir.is_dir():
+                continue
 
-<!-- List languages, frameworks, tools -->
+            backup_path = backup_dir / item
+            backup_path.mkdir(parents=True, exist_ok=True)
 
-## Development Guidelines
+            # Backup everything except _profile symlink
+            for subitem in item_dir.iterdir():
+                if subitem.name == "_profile" and subitem.is_symlink():
+                    continue
+                dst = backup_path / subitem.name
+                if subitem.is_dir():
+                    shutil.copytree(subitem, dst)
+                else:
+                    shutil.copy2(subitem, dst)
 
-<!-- Project-specific rules and conventions -->
+            if any(backup_path.iterdir()):
+                backup[item] = backup_path
 
----
-
-*Generated by CCM*
-"""
-
-        (self.claude_dir / "CLAUDE.md").write_text(content, encoding="utf-8")
+        return backup

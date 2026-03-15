@@ -54,9 +54,18 @@ class TestProjectManager:
         project = ProjectManager(project_dir=temp_dir)
         project.activate("test")
 
+        # Create a local resource to test preservation
+        (temp_dir / ".claude" / "skills" / "my-skill").mkdir(parents=True)
+        (temp_dir / ".claude" / "skills" / "my-skill" / "README.md").write_text("# My Skill")
+
         assert project.deactivate() is True
         assert not (temp_dir / ".ccm").exists()
-        assert not (temp_dir / ".claude").exists()
+        # .claude/ is preserved because local resources exist
+        assert (temp_dir / ".claude").exists()
+        # _profile symlink should be removed
+        assert not (temp_dir / ".claude" / "agents" / "_profile").exists()
+        # local resource should be preserved
+        assert (temp_dir / ".claude" / "skills" / "my-skill").exists()
 
     def test_deactivate_without_activation(self, temp_dir):
         """Test deactivating when nothing is active."""
