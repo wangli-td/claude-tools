@@ -1,0 +1,12 @@
+{
+  "name": "coding",
+  "description": "代码开发通用配置",
+  "extends": "base",
+  "from": {
+    "ecc": {
+      "agents": ["tdd-guide", "code-reviewer", "planner"],
+      "commands": ["/tdd", "/plan", "/code-review"],
+      "skills": ["tdd-workflow"]
+    }
+  }
+}

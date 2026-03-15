@@ -1,0 +1,9 @@
+{
+  "name": "base",
+  "description": "全局基础规则",
+  "from": {
+    "ecc": {
+      "rules": ["common/security", "common/git-workflow"]
+    }
+  }
+}

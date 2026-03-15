@@ -1,0 +1,23 @@
+{
+  "name": "coding-python",
+  "description": "Python 开发场景",
+  "extends": "coding",
+  "auto_fetch": {
+    "detect": [
+      {"file": "requirements.txt", "source": "ecc", "skills": ["python-patterns"]},
+      {"file": "pyproject.toml", "source": "ecc", "skills": ["python-patterns", "modern-python"]},
+      {"file": "Pipfile", "source": "ecc", "skills": ["python-patterns", "pipenv"]},
+      {"file": "setup.py", "source": "ecc", "skills": ["python-patterns"]}
+    ],
+    "default": {
+      "source": "ecc",
+      "skills": ["python-patterns"]
+    }
+  },
+  "from": {
+    "ecc": {
+      "skills": ["django-patterns"],
+      "rules": ["python/coding-style", "python/testing"]
+    }
+  }
+}
